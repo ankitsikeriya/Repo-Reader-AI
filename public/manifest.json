@@ -1,0 +1,35 @@
+{
+    "name": "Reporeader AI",
+    "short_name": "Reporeader",
+    "description": "Chat with your GitHub repositories and PDF documents using AI. The ultimate RAG-powered research assistant.",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#F0F0F0",
+    "theme_color": "#6495ED",
+    "orientation": "portrait-primary",
+    "icons": [
+        {
+            "src": "/icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "/icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ],
+    "categories": [
+        "productivity",
+        "developer tools",
+        "utilities"
+    ],
+    "screenshots": [
+        {
+            "src": "/screenshot-1.png",
+            "sizes": "1280x720",
+            "type": "image/png",
+            "label": "Chat with your code"
+        }
+    ]
+}
