@@ -1,0 +1,11 @@
+Loaded .env.local
+Testing which Gemini models have available quota...
+
+✅ gemini-2.5-flash: WORKS - "OK..."
+❌ gemini-2.5-pro: QUOTA EXHAUSTED (429)
+❌ gemini-2.0-flash: QUOTA EXHAUSTED (429)
+❌ gemini-2.0-flash-lite: QUOTA EXHAUSTED (429)
+✅ gemini-flash-latest: WORKS - "OK..."
+❌ gemini-pro-latest: QUOTA EXHAUSTED (429)
+
+Done. Check above for a model marked ✅ WORKS.
