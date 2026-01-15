@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { TaskType } from "@google/generative-ai";
-import { SystemMessage, HumanMessage } from "@langchain/core/messages";
-import { StringOutputParser } from "@langchain/core/output_parsers";
+import { Groq } from "groq-sdk";
 import pinecone, { indexName } from "@/lib/pinecone";
+import { getCachedEmbedding, cacheEmbedding, waitForRateLimit } from "@/lib/api-limiter";
+
+const groq = new Groq({
+    apiKey: process.env.GROQ_API_KEY,
+});
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -17,19 +20,25 @@ export async function POST(req) {
             return NextResponse.json({ error: "Notebook ID required" }, { status: 400 });
         }
 
-        // Query for diverse content samples
-        const embeddings = new GoogleGenerativeAIEmbeddings({
-            modelName: "text-embedding-004",
-            taskType: TaskType.RETRIEVAL_QUERY,
-            apiKey: process.env.GOOGLE_API_KEY,
-        });
+        // Query for diverse content samples (with caching)
+        const mindmapQuery = "main concepts topics structure";
+        let queryEmbedding = getCachedEmbedding(mindmapQuery);
 
-        const queryEmbedding = await embeddings.embedQuery("main concepts topics structure");
+        if (!queryEmbedding) {
+            await waitForRateLimit();
+            const embeddings = new GoogleGenerativeAIEmbeddings({
+                modelName: "text-embedding-004",
+                taskType: TaskType.RETRIEVAL_QUERY,
+                apiKey: process.env.GOOGLE_API_KEY,
+            });
+            queryEmbedding = await embeddings.embedQuery(mindmapQuery);
+            cacheEmbedding(mindmapQuery, queryEmbedding);
+        }
 
         const index = pinecone.Index(indexName);
         const results = await index.namespace(notebookId).query({
             vector: queryEmbedding,
-            topK: 30,
+            topK: 15,
             includeMetadata: true,
         });
 
@@ -40,9 +49,9 @@ export async function POST(req) {
             });
         }
 
-        // Build context from chunks
+        // Build context from chunks (truncate to reduce tokens)
         const chunks = results.matches.map(m => ({
-            text: m.metadata.text?.substring(0, 500),
+            text: m.metadata.text?.substring(0, 250),
             source: m.metadata.source,
             sourceType: m.metadata.sourceType || "unknown",
             filePath: m.metadata.filePath
@@ -52,13 +61,7 @@ export async function POST(req) {
             `[${c.sourceType}] ${c.filePath || c.source}: ${c.text}`
         ).join("\n\n");
 
-        // Generate mind map structure with Gemini
-        const llm = new ChatGoogleGenerativeAI({
-            model: "gemini-2.0-flash",
-            maxRetries: 5,
-            apiKey: process.env.GOOGLE_API_KEY,
-        });
-
+        // Generate mind map structure with Groq
         const systemPrompt = `Analyze the following content and create a mind map structure.
 
 Return ONLY valid JSON with this structure:
@@ -85,17 +88,19 @@ Rules:
 CONTENT:
 ${context}`;
 
-        const response = await llm.invoke([
-            new SystemMessage(systemPrompt),
-            new HumanMessage("Create the mind map JSON structure.")
-        ]);
+        const chatCompletion = await groq.chat.completions.create({
+            messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: "Create the mind map JSON structure." }
+            ],
+            model: "llama-3.1-8b-instant",
+            temperature: 0.7,
+            max_completion_tokens: 8192,
+            top_p: 1,
+            stream: false,
+        });
 
-        const parser = new StringOutputParser();
-        let textResponse = await parser.parse(response);
-
-        if (typeof textResponse !== 'string') {
-            textResponse = textResponse?.content || textResponse?.text || JSON.stringify(textResponse);
-        }
+        let textResponse = chatCompletion.choices[0]?.message?.content || "";
 
         // Parse JSON from response
         let mindmapData;

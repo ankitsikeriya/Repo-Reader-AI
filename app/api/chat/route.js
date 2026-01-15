@@ -1,11 +1,14 @@
 
 import { NextResponse } from "next/server";
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { TaskType } from "@google/generative-ai";
-import { SystemMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
-import { StringOutputParser } from "@langchain/core/output_parsers";
+import { Groq } from "groq-sdk";
 import pinecone, { indexName } from "@/lib/pinecone";
+import { getCachedEmbedding, cacheEmbedding, waitForRateLimit } from "@/lib/api-limiter";
+
+const groq = new Groq({
+    apiKey: process.env.GROQ_API_KEY,
+});
 
 export async function POST(req) {
     try {
@@ -18,14 +21,22 @@ export async function POST(req) {
         const lastMessage = messages[messages.length - 1];
         const query = lastMessage.content;
 
-        // 1. Embed Query
-        const embeddings = new GoogleGenerativeAIEmbeddings({
-            modelName: "text-embedding-004",
-            taskType: TaskType.RETRIEVAL_QUERY,
-            apiKey: process.env.GOOGLE_API_KEY,
-        });
+        // 1. Embed Query (with caching to reduce API calls)
+        let queryEmbedding = getCachedEmbedding(query);
 
-        const queryEmbedding = await embeddings.embedQuery(query);
+        if (!queryEmbedding) {
+            // Wait for rate limit before making API call
+            await waitForRateLimit();
+
+            const embeddings = new GoogleGenerativeAIEmbeddings({
+                modelName: "text-embedding-004",
+                taskType: TaskType.RETRIEVAL_QUERY,
+                apiKey: process.env.GOOGLE_API_KEY,
+            });
+
+            queryEmbedding = await embeddings.embedQuery(query);
+            cacheEmbedding(query, queryEmbedding);
+        }
 
         // 2. Query Pinecone
         const index = pinecone.Index(indexName);
@@ -46,17 +57,7 @@ export async function POST(req) {
             });
         }
 
-        // 4. Generate Response
-        console.log(`Initializing Gemini Chat with Key: ${process.env.GOOGLE_API_KEY ? "Present" : "Missing"}`);
-        const llm = new ChatGoogleGenerativeAI({
-            model: "gemini-2.5-flash",
-            // model: "gemini-pro", // Fallback
-            // apiVersion: "v1beta",
-            temperature: 0.3,
-            maxRetries: 5,
-            apiKey: process.env.GOOGLE_API_KEY,
-        });
-
+        // 4. Generate Response with Groq
         const systemPrompt = `You are a helpful assistant for a specific notebook.
 You answer questions ONLY using the provided Context.
 If the answer is NOT in the Context, say "I don't know based on the provided sources."
@@ -71,30 +72,31 @@ CITATION RULES:
 CONTEXT:
 ${context}`;
 
-        // Filter history to last few turns to save context window, but here we just pass the last user message + system
-        // In a real app we'd summarize history.
-        const response = await llm.invoke([
-            new SystemMessage(systemPrompt),
-            new HumanMessage(query)
-        ]);
+        console.log(`Initializing Groq Chat with Key: ${process.env.GROQ_API_KEY ? "Present" : "Missing"}`);
 
-        const parser = new StringOutputParser();
-        let textObject = await parser.parse(response);
+        const chatCompletion = await groq.chat.completions.create({
+            messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: query }
+            ],
+            model: "llama-3.3-70b-versatile",
+            temperature: 0.3,
+            max_completion_tokens: 8192,
+            top_p: 1,
+            stream: false,
+        });
 
-        // Ensure we have a string (some models return objects)
-        if (typeof textObject !== 'string') {
-            textObject = textObject?.content || textObject?.text || JSON.stringify(textObject);
-        }
+        const textResponse = chatCompletion.choices[0]?.message?.content || "";
 
         return NextResponse.json({
-            response: textObject,
+            response: textResponse,
             sources: results.matches.map(m => m.metadata)
-        }); // simplified non-streaming for MVP Step 1
+        });
     } catch (error) {
         console.error("Chat error:", error);
 
         // Handle 429 specifically
-        if (error.message.includes("429") || error.status === 429) {
+        if (error.message?.includes("429") || error.status === 429) {
             return NextResponse.json(
                 { error: "Server is busy (rate limit exceeded). Please try again in a few seconds." },
                 { status: 429 }

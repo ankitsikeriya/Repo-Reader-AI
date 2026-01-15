@@ -153,11 +153,12 @@ export async function POST(req) {
                     source: doc.metadata.source,
                     sourceType: doc.metadata.sourceType || sourceType,
                     page: doc.metadata.page || doc.metadata.loc?.pageNumber || 0,
-                    filePath: doc.metadata.filePath || null,
-                    lineStart: doc.metadata.lineStart || null,
-                    lineEnd: doc.metadata.lineEnd || null,
-                    repoUrl: doc.metadata.repoUrl || null,
                     notebookId,
+                    // Only include optional fields if they have actual values (Pinecone rejects null)
+                    ...(doc.metadata.filePath && { filePath: doc.metadata.filePath }),
+                    ...(doc.metadata.lineStart && { lineStart: doc.metadata.lineStart }),
+                    ...(doc.metadata.lineEnd && { lineEnd: doc.metadata.lineEnd }),
+                    ...(doc.metadata.repoUrl && { repoUrl: doc.metadata.repoUrl }),
                 },
             }));
 

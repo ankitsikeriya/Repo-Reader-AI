@@ -52,12 +52,20 @@ export default function ChatInterface() {
             const botMsg = {
                 role: "assistant",
                 content: data.response,
-                sources: data.sources // Array of metadata objects provided by API
+                sources: data.sources
             };
             setMessages((prev) => [...prev, botMsg]);
         } catch (err) {
             console.error(err);
-            setMessages((prev) => [...prev, { role: "assistant", content: "Sorry, I encountered an error. Please try again." }]);
+            // Handle rate limit errors specifically
+            if (err.message.includes("429") || err.message.includes("rate limit") || err.message.includes("busy")) {
+                setMessages((prev) => [...prev, {
+                    role: "assistant",
+                    content: "⏳ **Rate limit reached.** The API is cooling down. Please wait 15-30 seconds before trying again."
+                }]);
+            } else {
+                setMessages((prev) => [...prev, { role: "assistant", content: "Sorry, I encountered an error. Please try again." }]);
+            }
         } finally {
             setIsLoading(false);
         }

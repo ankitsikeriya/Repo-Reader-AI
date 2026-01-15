@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { TaskType } from "@google/generative-ai";
-import { SystemMessage, HumanMessage } from "@langchain/core/messages";
-import { StringOutputParser } from "@langchain/core/output_parsers";
+import { Groq } from "groq-sdk";
 import pinecone, { indexName } from "@/lib/pinecone";
+import { getCachedEmbedding, cacheEmbedding, waitForRateLimit } from "@/lib/api-limiter";
+
+const groq = new Groq({
+    apiKey: process.env.GROQ_API_KEY,
+});
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -18,19 +21,24 @@ export async function POST(req) {
         }
 
         // 1. Get a sample of vectors from the namespace to understand the content
-        const embeddings = new GoogleGenerativeAIEmbeddings({
-            modelName: "text-embedding-004",
-            taskType: TaskType.RETRIEVAL_QUERY,
-            apiKey: process.env.GOOGLE_API_KEY,
-        });
+        const overviewQuery = "summarize the main topics and concepts";
+        let queryEmbedding = getCachedEmbedding(overviewQuery);
 
-        // Use a general query to retrieve diverse content
-        const queryEmbedding = await embeddings.embedQuery("summarize the main topics and concepts");
+        if (!queryEmbedding) {
+            await waitForRateLimit();
+            const embeddings = new GoogleGenerativeAIEmbeddings({
+                modelName: "text-embedding-004",
+                taskType: TaskType.RETRIEVAL_QUERY,
+                apiKey: process.env.GOOGLE_API_KEY,
+            });
+            queryEmbedding = await embeddings.embedQuery(overviewQuery);
+            cacheEmbedding(overviewQuery, queryEmbedding);
+        }
 
         const index = pinecone.Index(indexName);
         const results = await index.namespace(notebookId).query({
             vector: queryEmbedding,
-            topK: 20,
+            topK: 10,
             includeMetadata: true,
         });
 
@@ -45,22 +53,17 @@ export async function POST(req) {
             });
         }
 
-        // 2. Construct context from retrieved chunks
+        // 2. Construct context from retrieved chunks (truncate to reduce tokens)
         const chunks = results.matches.map(match => {
             const meta = match.metadata;
             let sourceInfo = `[${meta.sourceType || 'unknown'}] ${meta.source}`;
             if (meta.filePath) sourceInfo += ` - ${meta.filePath}`;
-            if (meta.page) sourceInfo += ` (${meta.page})`;
-            return `--- ${sourceInfo} ---\n${meta.text}`;
+            // Truncate text to reduce token count
+            const truncatedText = (meta.text || '').substring(0, 300);
+            return `--- ${sourceInfo} ---\n${truncatedText}`;
         }).join("\n\n");
 
-        // 3. Generate synthesis with Gemini
-        const llm = new ChatGoogleGenerativeAI({
-            model: "gemini-2.0-flash",
-            maxRetries: 5,
-            apiKey: process.env.GOOGLE_API_KEY,
-        });
-
+        // 3. Generate synthesis with Groq
         const systemPrompt = `You are an expert research analyst. Analyze the following content samples from a research workspace and provide a structured synthesis.
 
 Your response MUST be valid JSON with this exact structure:
@@ -83,18 +86,19 @@ Be specific and reference actual topics from the content. Do not be generic.
 CONTENT SAMPLES:
 ${chunks}`;
 
-        const response = await llm.invoke([
-            new SystemMessage(systemPrompt),
-            new HumanMessage("Analyze this workspace and provide the JSON synthesis.")
-        ]);
+        const chatCompletion = await groq.chat.completions.create({
+            messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: "Analyze this workspace and provide the JSON synthesis." }
+            ],
+            model: "llama-3.1-8b-instant",
+            temperature: 0.7,
+            max_completion_tokens: 8192,
+            top_p: 1,
+            stream: false,
+        });
 
-        const parser = new StringOutputParser();
-        let textResponse = await parser.parse(response);
-
-        // Ensure string
-        if (typeof textResponse !== 'string') {
-            textResponse = textResponse?.content || textResponse?.text || JSON.stringify(textResponse);
-        }
+        let textResponse = chatCompletion.choices[0]?.message?.content || "";
 
         // Parse JSON from response
         try {

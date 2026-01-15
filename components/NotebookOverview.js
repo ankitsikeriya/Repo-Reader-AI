@@ -1,10 +1,14 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNotebook } from "@/lib/context";
 import { Sparkles, MessageCircle, RefreshCw, ChevronDown, ChevronUp, Network } from "lucide-react";
 import { clsx } from "clsx";
 import MindMapView from "./MindMapView";
+
+// Simple local cache for overview data (persists across re-renders)
+const overviewCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 export default function NotebookOverview({ onQuestionClick }) {
     const { activeNotebook, activeSources } = useNotebook();
@@ -13,9 +17,27 @@ export default function NotebookOverview({ onQuestionClick }) {
     const [error, setError] = useState(null);
     const [isExpanded, setIsExpanded] = useState(true);
     const [showMindMap, setShowMindMap] = useState(false);
+    const lastFetchRef = useRef(0);
 
-    const fetchOverview = async () => {
+    const fetchOverview = async (force = false) => {
         if (!activeNotebook || activeSources.length === 0) return;
+
+        // Check cache first (unless force refresh)
+        const cacheKey = `${activeNotebook.id}-${activeSources.length}`;
+        const cached = overviewCache.get(cacheKey);
+        if (!force && cached && Date.now() - cached.timestamp < CACHE_TTL) {
+            console.log("[Overview] Using cached data");
+            setOverview(cached.data);
+            return;
+        }
+
+        // Debounce: prevent fetching more than once every 3 seconds
+        const now = Date.now();
+        if (!force && now - lastFetchRef.current < 3000) {
+            console.log("[Overview] Debounced - too soon since last fetch");
+            return;
+        }
+        lastFetchRef.current = now;
 
         setIsLoading(true);
         setError(null);
@@ -32,6 +54,8 @@ export default function NotebookOverview({ onQuestionClick }) {
             if (!res.ok) throw new Error(data.error || "Failed to generate overview");
 
             setOverview(data);
+            // Cache the result
+            overviewCache.set(cacheKey, { data, timestamp: Date.now() });
         } catch (err) {
             setError(err.message);
             console.error("Overview error:", err);
@@ -42,7 +66,14 @@ export default function NotebookOverview({ onQuestionClick }) {
 
     useEffect(() => {
         if (activeNotebook && activeSources.length > 0) {
-            fetchOverview();
+            // Check cache before auto-fetching
+            const cacheKey = `${activeNotebook.id}-${activeSources.length}`;
+            const cached = overviewCache.get(cacheKey);
+            if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+                setOverview(cached.data);
+            } else {
+                fetchOverview();
+            }
         } else {
             setOverview(null);
         }
@@ -75,7 +106,7 @@ export default function NotebookOverview({ onQuestionClick }) {
                             <Network size={14} />
                         </button>
                         <button
-                            onClick={fetchOverview}
+                            onClick={() => fetchOverview(true)}
                             disabled={isLoading}
                             className="p-1.5 hover:bg-white/50 rounded-md text-zinc-500 transition-colors"
                             title="Refresh insights"
