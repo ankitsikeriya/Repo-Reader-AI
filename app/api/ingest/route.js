@@ -1,11 +1,10 @@
 
 import { NextResponse } from "next/server";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
-import { TaskType } from "@google/generative-ai";
 import { WebPDFLoader } from "@langchain/community/document_loaders/web/pdf";
 import { Document } from "@langchain/core/documents";
 import pinecone, { indexName } from "@/lib/pinecone";
+import { embedDocuments } from "@/lib/embeddings";
 import { loadGitHubRepo, isValidGitHubUrl } from "@/lib/github-loader";
 
 // Allow handling larger files and longer processing for GitHub cloning
@@ -110,20 +109,8 @@ export async function POST(req) {
 
         console.log(`Total chunks to process: ${splitDocs.length}`);
 
-        // 3. Generate Embeddings
-        const apiKey = process.env.GOOGLE_API_KEY;
-        if (!apiKey) {
-            throw new Error("GOOGLE_API_KEY is missing from environment variables.");
-        }
-        console.log(`Using Google API Key: ${apiKey.substring(0, 8)}...`);
-
-        const embeddings = new GoogleGenerativeAIEmbeddings({
-            modelName: "text-embedding-004",
-            taskType: TaskType.RETRIEVAL_DOCUMENT,
-            apiKey: apiKey,
-        });
-
-        const batchSize = 50; // Reduced batch size for stability
+        // 3. Generate Embeddings (Jina AI) — small batches to respect rate limits
+        const batchSize = 10;
         const pineconeIndex = pinecone.Index(indexName);
 
         // 4. Batch Upsert to Pinecone
@@ -133,16 +120,12 @@ export async function POST(req) {
             console.log(`Generating embeddings for batch ${Math.floor(i / batchSize) + 1} (${batch.length} chunks)...`);
             let batchEmbeddings;
             try {
-                batchEmbeddings = await embeddings.embedDocuments(
+                batchEmbeddings = await embedDocuments(
                     batch.map((d) => d.pageContent)
                 );
             } catch (err) {
-                console.error("Gemini Embeddings Failed:", err);
+                console.error("Jina Embeddings Failed:", err);
                 throw err;
-            }
-
-            if (!batchEmbeddings || batchEmbeddings.length === 0 || !batchEmbeddings[0] || batchEmbeddings[0].length === 0) {
-                throw new Error(`Embedding API returned empty/invalid vectors.`);
             }
 
             const vectors = batch.map((doc, idx) => ({

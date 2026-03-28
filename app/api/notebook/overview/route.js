@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
-import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
-import { TaskType } from "@google/generative-ai";
 import { Groq } from "groq-sdk";
 import pinecone, { indexName } from "@/lib/pinecone";
-import { getCachedEmbedding, cacheEmbedding, waitForRateLimit } from "@/lib/api-limiter";
+import { getCachedEmbedding, cacheEmbedding } from "@/lib/api-limiter";
+import { embedQuery } from "@/lib/embeddings";
 
 const groq = new Groq({
     apiKey: process.env.GROQ_API_KEY,
@@ -25,13 +24,7 @@ export async function POST(req) {
         let queryEmbedding = getCachedEmbedding(overviewQuery);
 
         if (!queryEmbedding) {
-            await waitForRateLimit();
-            const embeddings = new GoogleGenerativeAIEmbeddings({
-                modelName: "text-embedding-004",
-                taskType: TaskType.RETRIEVAL_QUERY,
-                apiKey: process.env.GOOGLE_API_KEY,
-            });
-            queryEmbedding = await embeddings.embedQuery(overviewQuery);
+            queryEmbedding = await embedQuery(overviewQuery);
             cacheEmbedding(overviewQuery, queryEmbedding);
         }
 
